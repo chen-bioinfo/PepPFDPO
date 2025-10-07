@@ -6,3 +6,8 @@ Antimicrobial peptide (AMP) drug discovery is challenged by simultaneously optim
 <img width="963" height="618" alt="image" src="https://github.com/user-attachments/assets/ac763c7b-ae17-45d8-9a2e-326fd6540a80" />
 
 # Usage Guide
+## 1. Installation
+Python (Version 3.8 or higher is recommended)
+pip install -r requirements.txt
+
+## 2. How to Run
