@@ -8,6 +8,34 @@ Antimicrobial peptide (AMP) drug discovery is challenged by simultaneously optim
 # Usage Guide
 ## 1. Installation
 Python (Version 3.8 or higher is recommended)
+
 pip install -r requirements.txt
 
 ## 2. How to Run
+Step 1: Fine-tune ProGen2 using LoRA_ProGen2.py in the Fituning folder.
+
+Step 2: Use the code in the PFDPO_ProGen2 folder in the Fituning folder to fine-tune the ProGen2 after LoRA fine-tuning, replace the path in the code with your own, and then run the main.py file.
+
+Step3：After training the model, you can run run.py in the generate folder to generate the sequence.
+
+Step4: Use the code in the Metric folder to evaluate the lifecycle sequence and the code in the picture folder to visualize the results.
+
+## 3. File and Directory Description
+Fituning: Fine-tuning the protein language model.
+
+generate: Generate sequences using the fine-tuned model.
+
+Metric: Evaluate various metrics of the generated sequence.
+
+picture: Visualize the results.
+
+ProtPLM: Protein language models for fine-tuning.
+
+results: Sequences generated in this experiment and the results.
+
+srcdata: Data used to fine-tune the model.
+
+requirements.txt: The environment required for the experiment depends on the experiment.
+
+## Citation
+If you use this code or our model for your publication, please cite the original paper.
