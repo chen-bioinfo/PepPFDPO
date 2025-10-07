@@ -1,0 +1,1 @@
+Download 'hugohrban/progen2-large' directly from HuggingFace
