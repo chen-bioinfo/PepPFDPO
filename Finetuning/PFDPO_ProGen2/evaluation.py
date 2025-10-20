@@ -5,7 +5,7 @@ import torch
 from utils import compute_reward
 
 def evaluate_sequences(sequences, antibacterial_scorer, activity_scorer, toxicity_scorer, config):
-    """评估生成的序列"""
+    """Evaluate the resulting sequence"""
     results = []
     
     for sequence in sequences:
@@ -28,12 +28,12 @@ def evaluate_sequences(sequences, antibacterial_scorer, activity_scorer, toxicit
     return results
 
 def plot_training_history(history, output_dir):
-    """绘制训练历史图表"""
+    """Plotting training history charts"""
     epochs = range(1, len(history) + 1)
     
     plt.figure(figsize=(15, 10))
     
-    # 损失曲线
+    # loss curve
     plt.subplot(2, 2, 1)
     plt.plot(epochs, [h['loss'] for h in history], label='DPO_Loss')
     plt.title('DPO_Loss')
@@ -41,7 +41,7 @@ def plot_training_history(history, output_dir):
     plt.ylabel('loss')
     plt.legend()
     
-    # 奖励曲线
+    #reward curve 
     plt.subplot(2, 2, 2)
     plt.plot(epochs, [h['mean_reward_better'] for h in history], label='reward_better')
     plt.plot(epochs, [h['mean_reward_worse'] for h in history], label='reward_worse')
@@ -51,7 +51,7 @@ def plot_training_history(history, output_dir):
     plt.ylabel('reward')
     plt.legend()
     
-    # 抗菌能力分数曲线
+    # Antibacterial ability score curve
     plt.subplot(2, 2, 3)
     plt.plot(epochs, [h['antibacterial_better'] for h in history], label='better-AMP')
     plt.plot(epochs, [h['antibacterial_worse'] for h in history], label='worse-AMP')
@@ -62,7 +62,7 @@ def plot_training_history(history, output_dir):
     plt.ylabel('score')
     plt.legend()
     
-    # 毒性曲线
+    # Toxicity curve
     plt.subplot(2, 2, 4)
     plt.plot(epochs, [h['toxicity_better'] for h in history], label='better-Toxic')
     plt.plot(epochs, [h['toxicity_worse'] for h in history], label='worse-Toxic')
@@ -76,14 +76,12 @@ def plot_training_history(history, output_dir):
     plt.close()
 
 def save_evaluation_results(results, epoch, output_dir):
-    """保存评估结果到文件"""
     output_file = os.path.join(output_dir, f'evaluation_epoch_{epoch}.txt')
     
-    # 按奖励降序排序
     sorted_results = sorted(results, key=lambda x: x['reward'], reverse=True)
     
     with open(output_file, 'w') as f:
-        f.write(f"{'序列':<50} {'奖励':<10} {'抗菌能力':<10} {'抗菌活性':<10} {'毒性':<10}\n")
+        f.write(f"{'sequence':<50} {'award':<10} {'Antibacterial ability':<10} {'Antibacterial activity':<10} {'毒性':<10}\n")
         f.write("-" * 100 + "\n")
         
         for result in sorted_results:
@@ -91,10 +89,8 @@ def save_evaluation_results(results, epoch, output_dir):
                     f"{result['antibacterial_score']:<10.4f} {result['activity_score']:<10.4f} "
                     f"{result['toxicity_score']:<10.4f}\n")
             
-    print(f"评估结果已保存到 {output_file}")
-    # 计算reward的平均值
     avg_reward = sum(r['reward'] for r in results) / len(results) if results else 0.0
-    # 返回最佳序列
+    # Return the best sequence
     return {
         'avg_reward': avg_reward,
         'best_result': sorted_results[0] if sorted_results else None
