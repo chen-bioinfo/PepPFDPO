@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingA
 from tokenizers import Tokenizer
 import random
 
-# 配置参数
+# Configuration parameters
 DATA_PATH = "your path/non_redundant_sequences.csv"
 OUTPUT_PATH = "your path/"
 tokenizer = Tokenizer.from_file("your path/tokenizer.json")
@@ -18,15 +18,13 @@ BOS_TOKEN_ID = tokenizer.token_to_id("<|bos|>")
 EOS_TOKEN_ID = tokenizer.token_to_id("<|eos|>")
 PAD_TOKEN_ID = tokenizer.token_to_id("<|pad|>") 
 
- # 最大序列长度（含控制符）
+ # Maximum sequence length (including control characters)
 MAX_LENGTH = 64       
 
-# LoRA 参数
 LORA_R = 8
 LORA_ALPHA = 16
 LORA_DROPOUT = 0.1
 
-# 训练参数
 TRAIN_PARAMS = {
     "output_dir": OUTPUT_PATH,
     "num_train_epochs": 50,
@@ -77,12 +75,11 @@ class AMPDataset(Dataset):
         }
 
 def main():
-    # 加载分词器
+    # Loading the tokenizer
     # tokenizer = Tokenizer.from_file("tokenizer.json")
     tokenizer = Tokenizer.from_file("your path/tokenizer.json")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     base_model = AutoModelForCausalLM.from_pretrained("hugohrban/progen2-large", trust_remote_code=True).to(device)
-    # 配置 LoRA
     lora_config = LoraConfig(
         r=LORA_R,
         lora_alpha=LORA_ALPHA,
@@ -98,10 +95,7 @@ def main():
     train_size = int(0.8 * len(sequences))
     train_sequences = sequences[:train_size]
     eval_sequences = sequences[train_size:]    
-    # 打印可训练参数
-    # model.print_trainable_parameters()
-    
-    # 初始化 Trainer
+   
     trainer = Trainer(
         model=model,
         args=TrainingArguments(**TRAIN_PARAMS),
@@ -109,9 +103,7 @@ def main():
         eval_dataset=AMPDataset(eval_sequences, tokenizer)
     )
     
-    # 开始训练
     trainer.train()
-    # 评估模型
     eval_results = trainer.evaluate()
     # print("Evaluation results:", eval_results)
     model.save_pretrained(OUTPUT_PATH)
