@@ -7,34 +7,47 @@ from tqdm import tqdm
 import os
 import random
 from model import clean_sequence
-from utils import compute_reward
+from utils import compute_multi_objective_reward
+from pareto_utils import ParetoOptimizer
 
-class DPOTrainer:
+class ParetoAwareDPOTrainer:
     def __init__(self, policy_network, config,
                  antibacterial_scorer, activity_scorer, toxicity_scorer):
-        """DPO trainer initialization"""
+        """Pareto frontier-based DPO trainer"""
         self.policy = policy_network
         self.config = config
         self.device = config.device
         
-        # Scorer function
+        # Scorer functions
         self.antibacterial_scorer = antibacterial_scorer
         self.activity_scorer = activity_scorer
         self.toxicity_scorer = toxicity_scorer
         
-        # Optimizer - only optimizes the LoRA layer
+        # Pareto optimizer
+        self.pareto_optimizer = ParetoOptimizer()
+        
+        # Optimizer
         self.optimizer = optim.Adam(
             [p for n, p in self.policy.model.named_parameters() if p.requires_grad], 
             lr=config.lr
         )
         
+        # Create output directories
         os.makedirs(config.output_dir, exist_ok=True)
+        os.makedirs(config.pareto_path, exist_ok=True)
         
-    def collect_preference_pairs(self, num_samples=64):
-          """Collect preference pair data"""
-        # Generate multiple candidate sequences
+        # Statistics collection
+        self.pareto_stats = {
+            'pareto_front_sizes': [],
+            'dominated_sizes': [],
+            'selection_ratios': []
+        }
+    
+    def collect_pareto_preference_pairs(self, num_samples=64):
+        """Collect preference pair data based on Pareto frontier"""
+        # Generate more candidate sequences to ensure sufficient diversity
         candidates, _ = self.policy.generate(
-            num_sequences=num_samples * 2, 
+            num_sequences=num_samples * 3, 
             min_length=self.config.min_length,
             max_length=self.config.max_length, 
             temperature=1.2
@@ -44,10 +57,10 @@ class DPOTrainer:
             print("Warning: Insufficient candidate sequences generated")
             return [], []
         
-        # Evaluate the reward for each sequence
+        # Evaluate multi-objective rewards for each sequence
         scored_candidates = []
         for sequence in candidates:
-            reward, scores = compute_reward(
+            combined_reward, original_scores, pareto_scores = compute_multi_objective_reward(
                 sequence, 
                 self.antibacterial_scorer, 
                 self.activity_scorer, 
@@ -57,58 +70,108 @@ class DPOTrainer:
             
             scored_candidates.append({
                 'sequence': sequence,
-                'reward': reward,
-                'scores': scores
+                'reward': combined_reward,
+                'scores': original_scores,  # (antibacterial, activity, toxicity)
+                'pareto_scores': pareto_scores  # (antibacterial, activity, -toxicity)
             })
         
-        # Sort by reward
-        scored_candidates.sort(key=lambda x: x['reward'], reverse=True)
+        # Find Pareto frontier using Pareto optimizer
+        pareto_front, dominated = self.pareto_optimizer.find_pareto_front(scored_candidates)
         
-        # Construct preference pairs - each pair contains a high reward and a low reward sequence
-        preference_pairs = []
-        n = len(scored_candidates)
+        # Record statistics
+        self.pareto_stats['pareto_front_sizes'].append(len(pareto_front))
+        self.pareto_stats['dominated_sizes'].append(len(dominated))
         
-        # Make sure we have at least num_samples preference pairs
-        num_pairs = min(num_samples, n // 2)
+        print(f"Pareto front size: {len(pareto_front)}, Dominated sequences: {len(dominated)}")
         
-        for i in range(num_pairs):
-            # Select higher ranked sequences as "good" examples
-            better_idx = i
-            
-            # Select lower ranked sequences as "bad" examples
-            worse_idx = n - i - 1
-            
-            if better_idx >= worse_idx:
-                break
-                
-            better_sequence = scored_candidates[better_idx]['sequence']
-            worse_sequence = scored_candidates[worse_idx]['sequence']
-            
-            # Ensure that the two sequences are different
-            if better_sequence != worse_sequence:
-                preference_pairs.append({
-                    'better': better_sequence,
-                    'worse': worse_sequence,
-                    'better_reward': scored_candidates[better_idx]['reward'],
-                    'worse_reward': scored_candidates[worse_idx]['reward'],
-                    'better_scores': scored_candidates[better_idx]['scores'],
-                    'worse_scores': scored_candidates[worse_idx]['scores']
-                })
+        # Build preference pairs
+        preference_pairs = self._build_preference_pairs(pareto_front, dominated, num_samples)
         
         return preference_pairs, scored_candidates
     
+    def _build_preference_pairs(self, pareto_front, dominated, num_samples):
+        """Build preference pairs"""
+        preference_pairs = []
+        
+        if not pareto_front or not dominated:
+            print("Warning: Pareto front or dominated set is empty")
+            return preference_pairs
+        
+        # Strategy 1: Pareto front vs dominated sequences
+        pareto_vs_dominated_pairs = min(num_samples // 2, len(pareto_front), len(dominated))
+        
+        for _ in range(pareto_vs_dominated_pairs):
+            better_seq = random.choice(pareto_front)
+            worse_seq = random.choice(dominated)
+            
+            preference_pairs.append({
+                'better': better_seq['sequence'],
+                'worse': worse_seq['sequence'],
+                'better_reward': better_seq['reward'],
+                'worse_reward': worse_seq['reward'],
+                'better_scores': better_seq['scores'],
+                'worse_scores': worse_seq['scores'],
+                'pair_type': 'pareto_vs_dominated'
+            })
+        
+        # Strategy 2: Intra-Pareto front comparison based on crowding distance
+        # if len(pareto_front) >= 2:
+        #     crowding_distances = self.pareto_optimizer.crowding_distance(pareto_front)
+            
+        #     # Sort by crowding distance
+        #     sorted_indices = sorted(range(len(pareto_front)), 
+        #                           key=lambda i: crowding_distances[i], reverse=True)
+            
+        #     pareto_internal_pairs = min(num_samples // 4, len(pareto_front) // 2)
+            
+        #     for i in range(pareto_internal_pairs):
+        #         if i * 2 + 1 < len(sorted_indices):
+        #             better_idx = sorted_indices[i * 2]  # Larger crowding distance
+        #             worse_idx = sorted_indices[i * 2 + 1]  # Smaller crowding distance
+                    
+        #             better_seq = pareto_front[better_idx]
+        #             worse_seq = pareto_front[worse_idx]
+                    
+        #             preference_pairs.append({
+        #                 'better': better_seq['sequence'],
+        #                 'worse': worse_seq['sequence'],
+        #                 'better_reward': better_seq['reward'],
+        #                 'worse_reward': worse_seq['reward'],
+        #                 'better_scores': better_seq['scores'],
+        #                 'worse_scores': worse_seq['scores'],
+        #                 'pair_type': 'pareto_internal'
+        #             })
+        
+        # Strategy 3: Intra-dominated set comparison based on combined reward
+        # if len(dominated) >= 2:
+        #     dominated_sorted = sorted(dominated, key=lambda x: x['reward'], reverse=True)
+        #     dominated_internal_pairs = min(num_samples // 4, len(dominated) // 2)
+            
+        #     for i in range(dominated_internal_pairs):
+        #         if i * 2 + 1 < len(dominated_sorted):
+        #             better_seq = dominated_sorted[i * 2]
+        #             worse_seq = dominated_sorted[i * 2 + 1]
+                    
+        #             preference_pairs.append({
+        #                 'better': better_seq['sequence'],
+        #                 'worse': worse_seq['sequence'],
+        #                 'better_reward': better_seq['reward'],
+        #                 'worse_reward': worse_seq['reward'],
+        #                 'better_scores': better_seq['scores'],
+        #                 'worse_scores': worse_seq['scores'],
+        #                 'pair_type': 'dominated_internal'
+        #             })
+        
+        return preference_pairs
+    
     def dpo_loss(self, better_logps, worse_logps, reference_better_logps, reference_worse_logps, beta=0.1):
-        """Calculating DPO Losses"""
-        # 计算log(pi(y_w|x)/pi_ref(y_w|x)) - log(pi(y_l|x)/pi_ref(y_l|x))
+        """Calculate DPO loss"""
         logits = beta * (better_logps - reference_better_logps) - beta * (worse_logps - reference_worse_logps)
-        
-        # Apply sigmoid cross entropy loss - log(sigmoid(logits))
         losses = -F.logsigmoid(logits)
-        
         return losses.mean()
     
     def compute_seq_logprob(self, sequence, model):
-        """Calculate the log probability of the sequence under the model"""
+        """Calculate log probability of a sequence under the model"""
         input_ids = [self.config.bos_token_id]
         for char in sequence:
             token_id = self.policy.tokenizer.token_to_id(char)
@@ -121,28 +184,27 @@ class DPOTrainer:
         
         inputs = torch.tensor([input_ids[:-1]], device=self.device)
         labels = torch.tensor([input_ids[1:]], device=self.device)
-
+        
         outputs = model(input_ids=inputs, labels=labels)
-        log_prob = -outputs.loss  
+        log_prob = -outputs.loss
         
         return log_prob
     
     def train_batch(self, preference_pairs):
-        """Training a batch of preference pairs"""
+        """Train on a batch of preference pairs"""
         if not preference_pairs:
-            print("Warning: No preference for data")
-            return {
-                'loss': 0,
-                'mean_reward_better': 0,
-                'mean_reward_worse': 0,
-                'antibacterial_better': 0,
-                'antibacterial_worse': 0,
-                'activity_better': 0,
-                'activity_worse': 0,
-                'toxicity_better': 0,
-                'toxicity_worse': 0,
-            }
+            print("Warning: No preference pair data available")
+            return self._empty_stats()
         
+        # Count different types of preference pairs
+        pair_types = {}
+        for pair in preference_pairs:
+            pair_type = pair.get('pair_type', 'unknown')
+            pair_types[pair_type] = pair_types.get(pair_type, 0) + 1
+        
+        print(f"Preference pair type distribution: {pair_types}")
+        
+        # Calculate statistics
         stats = {
             'loss': 0,
             'mean_reward_better': np.mean([p['better_reward'] for p in preference_pairs]),
@@ -153,15 +215,14 @@ class DPOTrainer:
             'activity_worse': np.mean([p['worse_scores'][1] for p in preference_pairs]),
             'toxicity_better': np.mean([p['better_scores'][2] for p in preference_pairs]),
             'toxicity_worse': np.mean([p['worse_scores'][2] for p in preference_pairs]),
+            'pair_types': pair_types,
         }
         
-        # Create a copy of the reference model - freeze parameters
+        # Create reference model
         reference_model = self.policy.create_reference_model()
         
-        # Calculate the loss for each preference pair
-        total_loss = 0
+        # Batch training
         batch_size = min(self.config.mini_batch_size, len(preference_pairs))
-        
         batch_indices = random.sample(range(len(preference_pairs)), batch_size)
         batch_pairs = [preference_pairs[i] for i in batch_indices]
         
@@ -170,16 +231,15 @@ class DPOTrainer:
         ref_better_logps = []
         ref_worse_logps = []
         
-        # Calculate the log probability of the strategy model
         for pair in batch_pairs:
             better_seq = pair['better']
             worse_seq = pair['worse']
             
-            # Calculate the logarithmic probability under the current strategy
+            # Calculate log probabilities under current policy
             better_logp = self.compute_seq_logprob(better_seq, self.policy.model)
             worse_logp = self.compute_seq_logprob(worse_seq, self.policy.model)
             
-            # Calculate the log probability under the reference model (no gradient required)
+            # Calculate log probabilities under reference model
             with torch.no_grad():
                 ref_better_logp = self.compute_seq_logprob(better_seq, reference_model)
                 ref_worse_logp = self.compute_seq_logprob(worse_seq, reference_model)
@@ -189,11 +249,13 @@ class DPOTrainer:
             ref_better_logps.append(ref_better_logp)
             ref_worse_logps.append(ref_worse_logp)
         
+        # Convert to tensors
         better_logps = torch.stack(better_logps)
         worse_logps = torch.stack(worse_logps)
         ref_better_logps = torch.stack(ref_better_logps)
         ref_worse_logps = torch.stack(ref_worse_logps)
-
+        
+        # Calculate loss
         loss = self.dpo_loss(
             better_logps, 
             worse_logps, 
@@ -201,7 +263,8 @@ class DPOTrainer:
             ref_worse_logps, 
             beta=self.config.beta
         )
-
+        
+        # Backpropagation
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(
@@ -213,48 +276,77 @@ class DPOTrainer:
         stats['loss'] = loss.item()
         return stats
     
-    def train_epoch(self):
-        """Train for one round"""
-        # Collect preference pairs
-        preference_pairs, candidates = self.collect_preference_pairs(num_samples=self.config.batch_size)
+    def _empty_stats(self):
+        """Return empty statistics"""
+        return {
+            'loss': 0,
+            'mean_reward_better': 0,
+            'mean_reward_worse': 0,
+            'antibacterial_better': 0,
+            'antibacterial_worse': 0,
+            'activity_better': 0,
+            'activity_worse': 0,
+            'toxicity_better': 0,
+            'toxicity_worse': 0,
+            'pair_types': {},
+        }
+    
+    def train_epoch(self, epoch=None):
+        """Train for one epoch"""
+        # Collect Pareto-based preference pairs
+        preference_pairs, all_candidates = self.collect_pareto_preference_pairs(
+            num_samples=self.config.batch_size
+        )
         
         if not preference_pairs:
-            print("Warning: No preference data collected")
-            return {
-                'loss': 0,
-                'mean_reward_better': 0,
-                'mean_reward_worse': 0,
-                'antibacterial_better': 0,
-                'antibacterial_worse': 0,
-                'activity_better': 0,
-                'activity_worse': 0,
-                'toxicity_better': 0,
-                'toxicity_worse': 0,
-                'overall_mean_reward': 0,
-                'overall_antibacterial': 0,
-                'overall_activity': 0,
-                'overall_toxicity': 0,
-            }
+            print("Warning: No preference pairs collected")
+            return self._empty_stats_with_overall()
+        
+        # Visualize Pareto frontier
+        if epoch is not None and epoch % 5 == 0:  # Visualize every 5 epochs
+            pareto_viz_path = os.path.join(self.config.pareto_path, f'pareto_front_epoch_{epoch}.png')
+            pf_size, dom_size = self.pareto_optimizer.visualize_pareto_front(
+                all_candidates, save_path=pareto_viz_path, epoch=epoch
+            )
+            print(f"Pareto frontier visualization saved to: {pareto_viz_path}")
         
         # Train multiple batches
         stats = None
-        for _ in range(self.config.dpo_epochs):
+        for dpo_iter in range(self.config.dpo_epochs):
             batch_stats = self.train_batch(preference_pairs)
             if stats is None:
                 stats = batch_stats
             else:
-                # Accumulated statistics
                 for key in stats:
-                    stats[key] += batch_stats[key]
+                    if key != 'pair_types':
+                        stats[key] += batch_stats[key]
         
+        # Calculate average values
         if stats:
             for key in stats:
-                stats[key] /= self.config.dpo_epochs
+                if key != 'pair_types':
+                    stats[key] /= self.config.dpo_epochs
         
-        if candidates:
-            stats['overall_mean_reward'] = np.mean([c['reward'] for c in candidates])
-            stats['overall_antibacterial'] = np.mean([c['scores'][0] for c in candidates])
-            stats['overall_activity'] = np.mean([c['scores'][1] for c in candidates])
-            stats['overall_toxicity'] = np.mean([c['scores'][2] for c in candidates])
+        # Add overall statistics
+        if all_candidates:
+            stats['overall_mean_reward'] = np.mean([c['reward'] for c in all_candidates])
+            stats['overall_antibacterial'] = np.mean([c['scores'][0] for c in all_candidates])
+            stats['overall_activity'] = np.mean([c['scores'][1] for c in all_candidates])
+            stats['overall_toxicity'] = np.mean([c['scores'][2] for c in all_candidates])
+            stats['pareto_front_size'] = self.pareto_stats['pareto_front_sizes'][-1] if self.pareto_stats['pareto_front_sizes'] else 0
+            stats['dominated_size'] = self.pareto_stats['dominated_sizes'][-1] if self.pareto_stats['dominated_sizes'] else 0
         
         return stats
+    
+    def _empty_stats_with_overall(self):
+        """Return empty statistics with overall metrics"""
+        empty_stats = self._empty_stats()
+        empty_stats.update({
+            'overall_mean_reward': 0,
+            'overall_antibacterial': 0,
+            'overall_activity': 0,
+            'overall_toxicity': 0,
+            'pareto_front_size': 0,
+            'dominated_size': 0,
+        })
+        return empty_stats
